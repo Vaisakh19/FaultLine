@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-
+	"errors"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 )
 
 func connectDB() (*pgxpool.Pool, error) {
@@ -30,47 +31,58 @@ func connectDB() (*pgxpool.Pool, error) {
 }
 func insertJob(dbpool *pgxpool.Pool, job *Job) error {
 	query := `
-        INSERT INTO jobs (name, priority)
-        VALUES ($1, $2)
-        RETURNING id
-    `
+    INSERT INTO jobs (name, priority, status)
+    VALUES ($1, $2, $3)
+    RETURNING id
+`
 
 	err := dbpool.QueryRow(
 		context.Background(),
 		query,
 		job.Name,
 		job.Priority,
+		job.Status,
 	).Scan(&job.ID)
-
 	return err
 }
 func getJobs(dbpool *pgxpool.Pool) ([]Job, error) {
-	query := `SELECT id, name, priority FROM jobs`
+    query := `
+        SELECT id, name, priority, status
+        FROM jobs
+        ORDER BY id
+    `
 
-	rows, err := dbpool.Query(context.Background(), query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+    rows, err := dbpool.Query(context.Background(), query)
+    if err != nil {
+        return nil, err
+    }
 
-	var jobs []Job
+    defer rows.Close()
 
-	for rows.Next() {
-		var job Job
+    var jobs []Job
 
-		err := rows.Scan(&job.ID, &job.Name, &job.Priority)
-		if err != nil {
-			return nil, err
-		}
+    for rows.Next() {
+        var job Job
 
-		jobs = append(jobs, job)
-	}
+        err := rows.Scan(
+            &job.ID,
+            &job.Name,
+            &job.Priority,
+            &job.Status,
+        )
 
-	return jobs, rows.Err()
+        if err != nil {
+            return nil, err
+        }
+
+        jobs = append(jobs, job)
+    }
+
+    return jobs, rows.Err()
 }
 func getJobByID(dbpool *pgxpool.Pool, id int) (Job, error) {
     query := `
-        SELECT id, name, priority
+        SELECT id, name, priority, status
         FROM jobs
         WHERE id = $1
     `
@@ -81,11 +93,63 @@ func getJobByID(dbpool *pgxpool.Pool, id int) (Job, error) {
         context.Background(),
         query,
         id,
-    ).Scan(&job.ID, &job.Name, &job.Priority)
+    ).Scan(
+        &job.ID,
+        &job.Name,
+        &job.Priority,
+        &job.Status,
+    )
 
     if err != nil {
         return Job{}, err
     }
 
     return job, nil
+}
+func updateJobStatus(
+    dbpool *pgxpool.Pool,
+    id int,
+    next JobStatus,
+) error {
+    ctx := context.Background()
+
+    tx, err := dbpool.Begin(ctx)
+    if err != nil {
+        return err
+    }
+
+    defer tx.Rollback(ctx)
+
+    var current JobStatus
+
+    err = tx.QueryRow(
+        ctx,
+        `SELECT status FROM jobs WHERE id = $1 FOR UPDATE`,
+        id,
+    ).Scan(&current)
+
+    if errors.Is(err, pgx.ErrNoRows) {
+        return ErrJobNotFound
+    }
+
+    if err != nil {
+        return err
+    }
+
+    if !canTransition(current, next) {
+        return ErrInvalidTransition
+    }
+
+    _, err = tx.Exec(
+        ctx,
+        `UPDATE jobs SET status = $1 WHERE id = $2`,
+        next,
+        id,
+    )
+
+    if err != nil {
+        return err
+    }
+
+    return tx.Commit(ctx)
 }
