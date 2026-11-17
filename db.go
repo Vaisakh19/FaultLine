@@ -153,3 +153,31 @@ func updateJobStatus(
 
     return tx.Commit(ctx)
 }
+func getNextJob(dbpool *pgxpool.Pool) (*Job, error) {
+    query := `
+        SELECT id, name, priority, status
+        FROM jobs
+        WHERE status = $1
+        ORDER BY priority DESC, id ASC
+        LIMIT 1
+    `
+
+    var job Job
+
+    err := dbpool.QueryRow(
+        context.Background(),
+        query,
+        JobStatusQueued,
+    ).Scan(
+        &job.ID,
+        &job.Name,
+        &job.Priority,
+        &job.Status,
+    )
+
+    if err != nil {
+        return nil, err
+    }
+
+    return &job, nil
+}

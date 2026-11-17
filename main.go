@@ -14,7 +14,8 @@ import (
 type JobStatus string
 
 const (
-    JobStatusPending   JobStatus = "PENDING"
+    JobStatusQueued    JobStatus = "QUEUED"
+    JobStatusAssigned  JobStatus = "ASSIGNED"
     JobStatusRunning   JobStatus = "RUNNING"
     JobStatusCompleted JobStatus = "COMPLETED"
     JobStatusFailed    JobStatus = "FAILED"
@@ -51,7 +52,7 @@ func createHandler(dbpool *pgxpool.Pool) http.HandlerFunc {
 			http.Error(w, "Priority must be between 1 and 5", http.StatusBadRequest)
 			return
 		}
-		job.Status=JobStatusPending
+		job.Status=JobStatusQueued
 		err = insertJob(dbpool, &job)
 
 		if err != nil {

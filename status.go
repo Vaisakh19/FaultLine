@@ -7,7 +7,10 @@ var (
 )
 func canTransition(current, next JobStatus) bool {
     switch current {
-    case JobStatusPending:
+    case JobStatusQueued:
+        return next == JobStatusAssigned
+
+    case JobStatusAssigned:
         return next == JobStatusRunning
 
     case JobStatusRunning:
