@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"os"
 	"testing"
-
+	"time"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -491,5 +491,67 @@ func TestClaimNextJobSkipsLockedJob(t *testing.T) {
     if lockedJob.Status != JobStatusQueued {
         t.Errorf("expected locked job to remain QUEUED, got %s",
             lockedJob.Status)
+    }
+}
+func TestRunScheduler(t *testing.T) {
+    dbpool := setupTestDB(t)
+
+    job := &Job{
+        Name:     "Scheduler Test",
+        Priority: 3,
+        Status:   JobStatusQueued,
+    }
+
+    if err := insertJob(dbpool, job); err != nil {
+        t.Fatalf("failed to insert job: %v", err)
+    }
+
+    t.Cleanup(func() {
+        _, err := dbpool.Exec(
+            context.Background(),
+            "DELETE FROM jobs WHERE id = $1",
+            job.ID,
+        )
+        if err != nil {
+            t.Errorf("failed to clean up job: %v", err)
+        }
+    })
+
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+
+    done := make(chan struct{})
+
+    go func() {
+        defer close(done)
+        runScheduler(ctx, dbpool, time.Hour)
+    }()
+
+    deadline := time.After(2 * time.Second)
+    ticker := time.NewTicker(10 * time.Millisecond)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-deadline:
+            t.Fatal("scheduler did not claim the job")
+
+        case <-ticker.C:
+            updatedJob, err := getJobByID(dbpool, job.ID)
+            if err != nil {
+                t.Fatalf("failed to retrieve job: %v", err)
+            }
+
+            if updatedJob.Status == JobStatusAssigned {
+                cancel()
+
+                select {
+                case <-done:
+                    return
+                case <-time.After(time.Second):
+                    t.Fatal("scheduler did not stop after cancellation")
+                }
+            }
+        }
     }
 }
