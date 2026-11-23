@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+    "context"
+    "time"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"net/http"
 	"strings"
@@ -10,6 +12,7 @@ import (
 	"strconv"
 	"github.com/jackc/pgx/v5"
 	"errors"
+    
 )
 type JobStatus string
 
@@ -165,24 +168,59 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 func main() {
-    dbpool, err := connectDB()
-    if err != nil {
-        fmt.Println("Database connection failed:", err)
-        return
-    }
-    defer dbpool.Close()
+	dbpool, err := connectDB()
+	if err != nil {
+		fmt.Println("Database connection failed:", err)
+		return
+	}
+	defer dbpool.Close()
 
-    mux := http.NewServeMux()
+	mux := http.NewServeMux()
 
-    mux.HandleFunc("GET /", homeHandler)
-    mux.HandleFunc("POST /jobs", createHandler(dbpool))
-    mux.HandleFunc("GET /jobs", getJobsHandler(dbpool))
-    mux.HandleFunc("GET /jobs/{id}", getJobByIDHandler(dbpool))
+	mux.HandleFunc("GET /", homeHandler)
+	mux.HandleFunc("POST /jobs", createHandler(dbpool))
+	mux.HandleFunc("GET /jobs", getJobsHandler(dbpool))
+	mux.HandleFunc("GET /jobs/{id}", getJobByIDHandler(dbpool))
 	mux.HandleFunc("PATCH /jobs/{id}/status", patchJobStatusHandler(dbpool))
-    fmt.Println("Faultline server running on port 8080")
 
-    err = http.ListenAndServe("127.0.0.1:8080", mux)
-    if err != nil {
-        fmt.Println("Server error:", err)
-    }
+	// Create a shared context for the scheduler.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Configure the HTTP server.
+	server := &http.Server{
+		Addr:    "127.0.0.1:8080",
+		Handler: mux,
+	}
+
+	// Start the scheduler in a separate goroutine.
+	schedulerErr := make(chan error, 1)
+
+	go func() {
+		schedulerErr <- runScheduler(ctx, dbpool, time.Second)
+	}()
+
+	// Start the HTTP server in a separate goroutine.
+	serverErr := make(chan error, 1)
+
+	go func() {
+		serverErr <- server.ListenAndServe()
+	}()
+
+	fmt.Println("Faultline server running on port 8080")
+
+	// Monitor both components.
+	select {
+	case err := <-schedulerErr:
+		if err != nil {
+			fmt.Println("Scheduler error:", err)
+		}
+		server.Close()
+
+	case err := <-serverErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			fmt.Println("Server error:", err)
+		}
+		cancel()
+	}
 }

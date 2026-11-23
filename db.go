@@ -181,8 +181,7 @@ func getNextJob(dbpool *pgxpool.Pool) (*Job, error) {
 
 	return &job, nil
 }
-func claimNextJob(dbpool *pgxpool.Pool) (*Job, error) {
-	ctx := context.Background()
+func claimNextJob(ctx context.Context, dbpool *pgxpool.Pool) (*Job, error) {
 
 	tx, err := dbpool.Begin(ctx)
 	if err != nil {

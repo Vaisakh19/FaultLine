@@ -306,7 +306,7 @@ func TestClaimNextJob(t *testing.T) {
 		}
 	})
 
-	claimedJob, err := claimNextJob(dbpool)
+	claimedJob, err := claimNextJob(context.Background(),dbpool)
 	if err != nil {
 		t.Fatalf("claimNextJob returned an error: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestConcurrentClaimNextJob(t *testing.T) {
         go func() {
             <-start
 
-            job, err := claimNextJob(dbpool)
+            job, err := claimNextJob(context.Background(),dbpool)
             results <- claimResult{
                 job: job,
                 err: err,
@@ -463,7 +463,7 @@ func TestClaimNextJobSkipsLockedJob(t *testing.T) {
     }
 
     // Scheduler B should skip the locked job.
-    claimedJob, err := claimNextJob(dbpool)
+    claimedJob, err := claimNextJob(context.Background(),dbpool)
     if err != nil {
         t.Fatalf("failed to claim next available job: %v", err)
     }
@@ -554,4 +554,77 @@ func TestRunScheduler(t *testing.T) {
             }
         }
     }
+}
+func TestProcessNextJobCancelledContext(t *testing.T) {
+	dbpool := setupTestDB(t)
+
+	// Insert a queued job.
+	job := &Job{
+		Name:     "Cancelled Scheduler Test",
+		Priority: 3,
+		Status:   JobStatusQueued,
+	}
+
+	if err := insertJob(dbpool, job); err != nil {
+		t.Fatalf("failed to insert job: %v", err)
+	}
+
+	// Clean up the inserted job after the test.
+	t.Cleanup(func() {
+		_, err := dbpool.Exec(
+			context.Background(),
+			"DELETE FROM jobs WHERE id = $1",
+			job.ID,
+		)
+		if err != nil {
+			t.Errorf("failed to clean up job: %v", err)
+		}
+	})
+
+	// Create an already-cancelled context.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// Attempt to process the next job.
+	processNextJob(ctx, dbpool)
+
+	// Verify that the job was not claimed.
+	updatedJob, err := getJobByID(dbpool, job.ID)
+	if err != nil {
+		t.Fatalf("failed to retrieve job: %v", err)
+	}
+
+	if updatedJob.Status != JobStatusQueued {
+		t.Errorf(
+			"expected job status %s, got %s",
+			JobStatusQueued,
+			updatedJob.Status,
+		)
+	}
+}
+
+func TestRunSchedulerRejectsInvalidInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+	}{
+		{
+			name:     "zero interval",
+			interval: 0,
+		},
+		{
+			name:     "negative interval",
+			interval: -time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runScheduler(context.Background(), nil, tt.interval)
+
+			if !errors.Is(err, ErrInvalidSchedulerInterval) {
+				t.Fatalf("expected ErrInvalidSchedulerInterval, got %v", err)
+			}
+		})
+	}
 }
