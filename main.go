@@ -1,33 +1,36 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-    "context"
-    "time"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
-	"strconv"
-	"github.com/jackc/pgx/v5"
-	"errors"
-    
+	"time"
 )
+
 type JobStatus string
 
 const (
-    JobStatusQueued    JobStatus = "QUEUED"
-    JobStatusAssigned  JobStatus = "ASSIGNED"
-    JobStatusRunning   JobStatus = "RUNNING"
-    JobStatusCompleted JobStatus = "COMPLETED"
-    JobStatusFailed    JobStatus = "FAILED"
+	JobStatusQueued    JobStatus = "QUEUED"
+	JobStatusAssigned  JobStatus = "ASSIGNED"
+	JobStatusRunning   JobStatus = "RUNNING"
+	JobStatusCompleted JobStatus = "COMPLETED"
+	JobStatusFailed    JobStatus = "FAILED"
 )
+
 type Job struct {
-    ID       int    `json:"id"`
-    Name     string `json:"name"`
-    Priority int    `json:"priority"`
-    Status   JobStatus `json:"status"`
+	ID       int       `json:"id"`
+	Name     string    `json:"name"`
+	Priority int       `json:"priority"`
+	Status   JobStatus `json:"status"`
 }
 
 var nextJobID = 1
@@ -55,7 +58,7 @@ func createHandler(dbpool *pgxpool.Pool) http.HandlerFunc {
 			http.Error(w, "Priority must be between 1 and 5", http.StatusBadRequest)
 			return
 		}
-		job.Status=JobStatusQueued
+		job.Status = JobStatusQueued
 		err = insertJob(dbpool, &job)
 
 		if err != nil {
@@ -88,79 +91,79 @@ func getJobsHandler(dbpool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 func getJobByIDHandler(dbpool *pgxpool.Pool) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 
-        id, err := strconv.Atoi(r.PathValue("id"))
+		id, err := strconv.Atoi(r.PathValue("id"))
 
-        if err != nil {
-            http.Error(w, "Invalid job ID", http.StatusBadRequest)
-            return
-        }
-        job, err := getJobByID(dbpool, id)
+		if err != nil {
+			http.Error(w, "Invalid job ID", http.StatusBadRequest)
+			return
+		}
+		job, err := getJobByID(dbpool, id)
 
-        if err != nil {
-            if err == pgx.ErrNoRows {
-                http.Error(w, "Job not found", http.StatusNotFound)
-                return
-            }
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				http.Error(w, "Job not found", http.StatusNotFound)
+				return
+			}
 
-            http.Error(w, "Failed to retrieve job", http.StatusInternalServerError)
-            return
-        }
-        w.Header().Set("Content-Type", "application/json")
-        json.NewEncoder(w).Encode(job)
-    }
+			http.Error(w, "Failed to retrieve job", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(job)
+	}
 }
 func patchJobStatusHandler(dbpool *pgxpool.Pool) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 
-        // Extract job ID from URL
-        id, err := strconv.Atoi(r.PathValue("id"))
-        if err != nil || id <= 0 {
-            http.Error(w, "Invalid job ID", http.StatusBadRequest)
-            return
-        }
+		// Extract job ID from URL
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil || id <= 0 {
+			http.Error(w, "Invalid job ID", http.StatusBadRequest)
+			return
+		}
 
-        // Decode request body
-        var request struct {
-            Status JobStatus `json:"status"`
-        }
+		// Decode request body
+		var request struct {
+			Status JobStatus `json:"status"`
+		}
 
-        err = json.NewDecoder(r.Body).Decode(&request)
-        if err != nil {
-            http.Error(w, "Invalid JSON", http.StatusBadRequest)
-            return
-        }
+		err = json.NewDecoder(r.Body).Decode(&request)
+		if err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
 
-        // Update job status
-        err = updateJobStatus(dbpool, id, request.Status)
+		// Update job status
+		err = updateJobStatus(dbpool, id, request.Status)
 
-        if errors.Is(err, ErrJobNotFound) {
-            http.Error(w, "Job not found", http.StatusNotFound)
-            return
-        }
+		if errors.Is(err, ErrJobNotFound) {
+			http.Error(w, "Job not found", http.StatusNotFound)
+			return
+		}
 
-        if errors.Is(err, ErrInvalidTransition) {
-            http.Error(w, "Invalid status transition", http.StatusBadRequest)
-            return
-        }
+		if errors.Is(err, ErrInvalidTransition) {
+			http.Error(w, "Invalid status transition", http.StatusBadRequest)
+			return
+		}
 
-        if err != nil {
-            http.Error(w, "Failed to update job status", http.StatusInternalServerError)
-            return
-        }
+		if err != nil {
+			http.Error(w, "Failed to update job status", http.StatusInternalServerError)
+			return
+		}
 
-        // Retrieve updated job
-        job, err := getJobByID(dbpool, id)
-        if err != nil {
-            http.Error(w, "Failed to retrieve updated job", http.StatusInternalServerError)
-            return
-        }
+		// Retrieve updated job
+		job, err := getJobByID(dbpool, id)
+		if err != nil {
+			http.Error(w, "Failed to retrieve updated job", http.StatusInternalServerError)
+			return
+		}
 
-        // Return updated job
-        w.Header().Set("Content-Type", "application/json")
-        json.NewEncoder(w).Encode(job)
-    }
+		// Return updated job
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(job)
+	}
 }
 func homeHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Request received:", r.Method)
@@ -168,6 +171,11 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 func main() {
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+	)
+	defer stop()
 	dbpool, err := connectDB()
 	if err != nil {
 		fmt.Println("Database connection failed:", err)
@@ -184,8 +192,8 @@ func main() {
 	mux.HandleFunc("PATCH /jobs/{id}/status", patchJobStatusHandler(dbpool))
 
 	// Create a shared context for the scheduler.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	schedulerCtx, cancelScheduler := context.WithCancel(ctx)
+	defer cancelScheduler()
 
 	// Configure the HTTP server.
 	server := &http.Server{
@@ -197,7 +205,7 @@ func main() {
 	schedulerErr := make(chan error, 1)
 
 	go func() {
-		schedulerErr <- runScheduler(ctx, dbpool, time.Second)
+		schedulerErr <- runScheduler(schedulerCtx, dbpool, time.Second)
 	}()
 
 	// Start the HTTP server in a separate goroutine.
@@ -210,17 +218,57 @@ func main() {
 	fmt.Println("Faultline server running on port 8080")
 
 	// Monitor both components.
+
+	schedulerStopped := false
+	serverStopped := false
+
 	select {
 	case err := <-schedulerErr:
+		schedulerStopped = true
+
 		if err != nil {
 			fmt.Println("Scheduler error:", err)
 		}
-		server.Close()
 
 	case err := <-serverErr:
+		serverStopped = true
+
 		if !errors.Is(err, http.ErrServerClosed) {
 			fmt.Println("Server error:", err)
 		}
-		cancel()
+
+	case <-ctx.Done():
+		fmt.Println("Shutdown signal received")
 	}
+	if !serverStopped {
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
+		)
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			fmt.Println("HTTP server shutdown error:", err)
+
+			if closeErr := server.Close(); closeErr != nil {
+				fmt.Println("HTTP server close error:", closeErr)
+			}
+		}
+
+		shutdownCancel()
+	}
+	if !serverStopped {
+		if err := <-serverErr; !errors.Is(err, http.ErrServerClosed) {
+			fmt.Println("HTTP server error during shutdown:", err)
+		}
+	}
+	cancelScheduler()
+
+	if !schedulerStopped {
+		if err := <-schedulerErr; err != nil {
+			fmt.Println("Scheduler shutdown error:", err)
+		}
+	}
+
+	fmt.Println("Scheduler stopped")
+
 }
